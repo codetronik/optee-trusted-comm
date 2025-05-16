@@ -13,3 +13,6 @@ make
 ```
 ./client_example.py
 ```
+
+### Communication Example
+![image](https://raw.githubusercontent.com/codetronik/optee-trusted-comm/master/example.png)
