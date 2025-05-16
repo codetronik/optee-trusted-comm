@@ -1,4 +1,4 @@
-#### Secure Communication between devices based on OP-TEE
+#### Trusted Communication between devices based on OP-TEE
 
 ## Server Build
 ```
