@@ -1,6 +1,6 @@
-secure communication between devices based on OP-TEE
+#### Secure Communication between devices based on OP-TEE
 
-### Server Build
+## Server Build
 ```
 sudo apt-get install clang libssl-dev
 cd server
@@ -9,10 +9,10 @@ make
 ./server
 ```
 
-### Client (example)
+## Client (example)
 ```
-./client_example.py
+python3 client_example.py
 ```
 
-### Communication Example
+## Communication Example
 ![image](https://raw.githubusercontent.com/codetronik/optee-trusted-comm/master/example.png)
