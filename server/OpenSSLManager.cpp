@@ -1,6 +1,7 @@
 #include "OpenSSLManager.h"
 #include <openssl/pem.h>
 #include <openssl/x509v3.h>
+#include <openssl/bn.h>
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -142,7 +143,6 @@ bool OpenSSLManager::loadFromFile() {
     return true;
 }
 
-
 std::string OpenSSLManager::getCertificatePem() const {
     BIO* mem = BIO_new(BIO_s_mem());
     PEM_write_bio_X509(mem, _cert);
@@ -154,33 +154,118 @@ std::string OpenSSLManager::getCertificatePem() const {
 }
 
 std::string OpenSSLManager::signCSR(const std::string& csrPem) {
-    BIO* bio = BIO_new_mem_buf(csrPem.c_str(), -1);
+    BIO* bio = BIO_new_mem_buf(csrPem.data(), static_cast<int>(csrPem.size()));
+    if (!bio) return "Failed to create BIO";
+
     X509_REQ* req = PEM_read_bio_X509_REQ(bio, nullptr, nullptr, nullptr);
     BIO_free(bio);
     if (!req) return "Invalid CSR";
 
+    // 새 인증서 생성
     X509* newCert = X509_new();
-    ASN1_INTEGER_set(X509_get_serialNumber(newCert), 2);
+    if (!newCert) {
+        X509_REQ_free(req);
+        return "Failed to create new X509 certificate";
+    }
+
+    // 시리얼 번호 랜덤 생성 (64비트)
+    ASN1_INTEGER* serial = ASN1_INTEGER_new();
+    if (!serial) {
+        X509_free(newCert);
+        X509_REQ_free(req);
+        return "Failed to create ASN1_INTEGER for serial";
+    }
+
+    BIGNUM* bn = BN_new();
+    if (!bn) {
+        ASN1_INTEGER_free(serial);
+        X509_free(newCert);
+        X509_REQ_free(req);
+        return "Failed to create BIGNUM for serial";
+    }
+
+    // OpenSSL 3.0 이상 권장 안전한 난수 생성 함수 사용
+    if (!BN_priv_rand(bn, 64, BN_RAND_TOP_ANY, BN_RAND_BOTTOM_ANY)) {
+        BN_free(bn);
+        ASN1_INTEGER_free(serial);
+        X509_free(newCert);
+        X509_REQ_free(req);
+        return "Failed to generate random serial number";
+    }
+
+    if (!BN_to_ASN1_INTEGER(bn, serial)) {
+        BN_free(bn);
+        ASN1_INTEGER_free(serial);
+        X509_free(newCert);
+        X509_REQ_free(req);
+        return "Failed to convert BIGNUM to ASN1_INTEGER";
+    }
+
+    BN_free(bn);
+
+    // 인증서 시리얼 번호 설정
+    X509_set_serialNumber(newCert, serial);
+    ASN1_INTEGER_free(serial);
+
+    // 인증서 유효기간 설정: 지금부터 1년 (31536000초)
     X509_gmtime_adj(X509_get_notBefore(newCert), 0);
     X509_gmtime_adj(X509_get_notAfter(newCert), 31536000L);
 
+    // CSR에서 subject 이름 복사
     X509_set_subject_name(newCert, X509_REQ_get_subject_name(req));
+
+    // CA 인증서의 issuer 이름 복사
     X509_set_issuer_name(newCert, X509_get_subject_name(_cert));
 
+    // CSR의 공개키 복사
     EVP_PKEY* reqKey = X509_REQ_get_pubkey(req);
+    if (!reqKey) {
+        X509_free(newCert);
+        X509_REQ_free(req);
+        return "Failed to get public key from CSR";
+    }
     X509_set_pubkey(newCert, reqKey);
     EVP_PKEY_free(reqKey);
 
-    X509_sign(newCert, _pkey, EVP_sha256());
-    X509_REQ_free(req);
+    // CSR의 확장들 복사 (예: SubjectAltName 등)
+    STACK_OF(X509_EXTENSION)* exts = X509_REQ_get_extensions(req);
+    if (exts) {
+        for (int i = 0; i < sk_X509_EXTENSION_num(exts); i++) {
+            X509_EXTENSION* ext = sk_X509_EXTENSION_value(exts, i);
+            X509_add_ext(newCert, ext, -1);
+        }
+        sk_X509_EXTENSION_pop_free(exts, X509_EXTENSION_free);
+    }
 
+    // 인증서 서명 (CA 개인키 사용, SHA-256 해시)
+    if (!X509_sign(newCert, _pkey, EVP_sha256())) {
+        X509_free(newCert);
+        X509_REQ_free(req);
+        return "Failed to sign certificate";
+    }
+
+    // 인증서 PEM으로 변환
     BIO* out = BIO_new(BIO_s_mem());
-    PEM_write_bio_X509(out, newCert);
+    if (!out) {
+        X509_free(newCert);
+        X509_REQ_free(req);
+        return "Failed to create BIO for output";
+    }
+
+    if (!PEM_write_bio_X509(out, newCert)) {
+        BIO_free(out);
+        X509_free(newCert);
+        X509_REQ_free(req);
+        return "Failed to write certificate to PEM";
+    }
+
     char* data;
     long len = BIO_get_mem_data(out, &data);
     std::string result(data, len);
+
     BIO_free(out);
     X509_free(newCert);
+    X509_REQ_free(req);
 
     return result;
 }
